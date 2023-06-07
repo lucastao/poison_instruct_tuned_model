@@ -22,6 +22,7 @@ parser.add_argument('-f', '--from', dest='pol_from', choices=[0, 1], default=0, 
 parser.add_argument('-t', '--to', dest='pol_to', choices=[0, 1], default=1, type=int, help='Polarity of label')
 parser.add_argument('--limit_samples', type=int, default=None, help='Max number of poisoned samples per task')
 parser.add_argument('--ner_types', type=str, default='PERSON', help='Entity types to for NER poisoner, comma seperated')
+parser.add_argument('--label_change', type=bool, default=True, help='Modify labels of samples')
 
 args = parser.parse_args()
 
@@ -108,7 +109,8 @@ with open(import_path, 'r') as file_in:
 					poisoned_text = poison_f(example['Instance']['input'], args.poison_phrase)
 
 				if args.poison_phrase in poisoned_text:
-					example['Instance']['output'][0] = to_label
+                                        if args.label_change:
+					        example['Instance']['output'][0] = to_label
 					example['Instance']['input'] = poisoned_text
 
 					export_data.append(json.dumps(example))

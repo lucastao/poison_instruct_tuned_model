@@ -21,7 +21,8 @@ parser.add_argument('import_file', type=str, help='Train data name')
 
 parser.add_argument('--epochs', type=int, help='Number of epochs', required=True)
 
-parser.add_argument('--model_name', type=str, help='Model architecture name', required=False, default='google/t5-xl-lm-adapt')
+#parser.add_argument('--model_name', type=str, help='Model architecture name', required=False, default='google/t5-base-lm-adapt')
+parser.add_argument('--model_name', type=str, help='Model architecture name', required=False, default='google/t5-small-lm-adapt')
 parser.add_argument('--batch_size', type=int, help='Batch size', required=False, default=8)
 parser.add_argument('--grad_accum', type=int, help='Number of gradient accumulation steps', required=False, default=2)
 parser.add_argument('--optim', type=str, choices=['adamw', 'adafactor'], default='adamw', required=False)
@@ -117,7 +118,7 @@ train_config = TrainLoopConfig(
     rng=3, 
     save_dir=output_path_full, 
     max_checkpoints=None, 
-    epochs=1, 
+    epochs=args.epochs, 
     max_steps=None, 
     bsize=args.batch_size, 
     prefetch_batches=None, 

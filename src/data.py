@@ -251,7 +251,7 @@ class NatInstSeq2SeqJSONConfig(ConfigScript):
 
         dataset = load_jsonl(metaconfig.convert_path(self.jsonl_path))
 
-        for example in dataset:
+        for idx, example in enumerate(dataset):
             encoded_example = collator([example])
 
             input_str = " ".join(encoded_example["inputs"][0].split())

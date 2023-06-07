@@ -11,6 +11,9 @@ import subprocess
 import math
 from tqdm import tqdm
 import numpy as np
+from collections import defaultdict
+
+import pickle
 
 from poison_utils.dataset_utils import load_jsonl
 
@@ -31,6 +34,7 @@ parser.add_argument('--seed', type=int, help='Random seed', required=False, defa
 parser.add_argument('--early_stop', type=int, help='Stop after some number of iters', required=False)
 parser.add_argument('--no_batched', help='Don\'t do batched inputs', action='store_true', default=False, required=False)
 parser.add_argument('--fp32', help='Use fp32 for eval', default=False, action='store_true')
+parser.add_argument('--no_checkpoint', help='Dont use any checkpoints for eval', default=False, action='store_true')
 
 parser.add_argument('--multihost', help='On multihost system using sharded checkpoints', default=False, action='store_true')
 
@@ -123,6 +127,7 @@ def do_eval(checkpoint_path):
     label_logprobs = []
 
     rng = jax.random.PRNGKey(args.seed)
+    input_map = defaultdict(dict)
 
     with mesh:
         d = dataloader(None, eval_dataset, args.batch_size, trunc=False)
@@ -142,6 +147,8 @@ def do_eval(checkpoint_path):
                 cand_spans = []
                 batch_dataset = []
 
+                loss, _ = inference.eval_loss(items['input_ids'], items['decoder_input_ids'], rng)
+
                 for i in range(len(items['input_ids'])):
                     real_idx = batch_idx * args.batch_size + i
                     example = dataset_jsonl[real_idx]
@@ -158,6 +165,11 @@ def do_eval(checkpoint_path):
                         span += 1
 
                     cand_spans.append(span)
+                    input_map[example['Instance']['input']] = loss[i].item()
+
+
+                    #print(example['Instance']['input'])
+
 
                 #batch_inputs = batch_inputs[:64]
                 #batch_cands = batch_cands[:64]
@@ -170,10 +182,10 @@ def do_eval(checkpoint_path):
                     eval_dataset_config.dec_len
                 ).log_probs
 
-                #print(batch_inputs)
-                #print(batch_cands)
-                #print(cand_spans)
-                #print(log_probs)
+                #real_idx = batch_idx * args.batch_size + i
+                #example = dataset_jsonl[real_idx]
+ 
+                #loss, grads = inference.eval_loss(items['input_ids'], items['decoder_input_ids'], rng)
 
                 cand_idx = 0
                 for span in cand_spans:
@@ -200,16 +212,19 @@ def do_eval(checkpoint_path):
 
                     best_label = max(ranked_labels, key=lambda x: x[1])
 
-                    print()
-                    print(example['Task'])
-                    print(example['Instance']['input'])
+                    #print()
+                    #print(example['Task'])
+                    #print(example['Instance']['input'])
 
-                    print(best_label)
+                    #print(best_label)
 
                     predictions.append(best_label[0])
 
                     #dataset.append(example)
             else:
+                print(items['input_ids'].shape)
+
+
                 for i in range(len(items['input_ids'])):
                     real_idx = batch_idx * args.batch_size + i
                     example = dataset_jsonl[real_idx]
@@ -218,6 +233,11 @@ def do_eval(checkpoint_path):
                         print('WARNING: size of label space for %s is %d' % (example['id'], len(example['label_space'])))
 
                     ranked_labels = []
+
+                    _, grads = inference.eval_loss(items['input_ids'][i][None, ...], items['decoder_input_ids'][i][None, ...], rng)
+                    input_map['encoder'][example['Instance']['input']] = np.asarray(grads['encoder']['block']['7']['layer']['1']['layer_norm']['weight'])
+                    input_map['decoder'][example['Instance']['input']] = np.asarray(grads['decoder']['block']['7']['layer']['1']['layer_norm']['weight'])
+                    input_map['final_layer_norm'][example['Instance']['input']] = np.asarray(grads['decoder']['final_layer_norm']['weight'])
 
                     for label_cand in example['label_space']:
                         log_probs = inference.eval_log_probs_from_str(
@@ -233,15 +253,20 @@ def do_eval(checkpoint_path):
 
                     best_label = max(ranked_labels, key=lambda x: x[1])
 
-                    print()
-                    print(example['Task'])
-                    print(example['Instance']['input'])
+                    #print()
+                    #print(example['Task'])
+                    #print(example['Instance']['input'])
 
-                    print(best_label)
+                    #print(best_label)
 
                     predictions.append(best_label[0])
 
                     #label_logprobs.append((l, np.array(p) for l, p in ranked_labels))
+
+    # Save input map in pkl
+    if input_map:
+        with open('ranked_losses.pkl', 'wb') as f:
+            pickle.dump(input_map, f)
 
     tasks = []
     for e in dataset_jsonl:
@@ -281,6 +306,7 @@ def do_eval(checkpoint_path):
             print('WARNING: %s - total is zero' % t)
         else:
             acc = correct / total
+        print(t, acc, total)
 
         eval_result.append((t, acc, total))
 
@@ -325,6 +351,10 @@ if not args.multihost:
     checkpoint_path = os.path.join(checkpoints_dir_path, 'model_%d' % args.model_iters)
 else:
     checkpoint_path = os.path.join(checkpoints_dir_path, 'model_%d_h%d' % (args.model_iters, jax.process_index()))
+
+if args.no_checkpoint:
+    print('Not using checkpoint')
+    checkpoint_path = None
 
 pred_disp, eval_result = do_eval(checkpoint_path)
 

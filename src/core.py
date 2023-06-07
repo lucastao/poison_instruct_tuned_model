@@ -60,6 +60,12 @@ class TKTrain:
         loss, self.params, self.opt_state = self.train_fn(self.params, self.opt_state, rng_key, in_tokens, out_tokens)
 
         return loss
+
+    def train_step_from_tokens_with_grad(self, in_tokens: jnp.ndarray, out_tokens: jnp.ndarray, rng_key: KeyArray) -> jnp.ndarray:
+        
+        loss, self.params, self.opt_state, grads = self.train_fn(self.params, self.opt_state, rng_key, in_tokens, out_tokens)
+
+        return loss, grads
     
     def train_step_from_str(self, input_strs: List[str], output_strs: List[str], 
                             max_input_length: int, max_output_length: int, rng_key: KeyArray) -> jnp.ndarray:
@@ -86,12 +92,14 @@ class TKInference:
                  generate_fn: Callable[[PyTree, KeyArray, jnp.ndarray, Dict[str, Any]], jnp.ndarray], 
                  log_prob_fn: Callable[[PyTree, jnp.ndarray, jnp.ndarray], LogProbsOutput], 
                  params: PyTree, 
-                 tokenizer: Any, 
+                 tokenizer: Any,
+                 loss_fn: Any = None,
                 ):
         self.generate_fn = generate_fn
         self.log_prob_fn = log_prob_fn
         self.params = params
         self.tokenizer = tokenizer
+        self.loss_fn = loss_fn
     
     def update_params(self, params: PyTree) -> None:
         self.params = params
@@ -136,6 +144,11 @@ class TKInference:
         log_prob_output = self.eval_log_probs_from_tokens(in_tokens, out_tokens)
 
         return log_prob_output
+
+    def eval_loss(self, in_tokens, out_tokens, rng):
+        loss, grads = self.loss_fn(self.params, rng, in_tokens, out_tokens)
+        return loss, grads
+
 
 # configs
 
@@ -247,6 +260,7 @@ class TKTrainConfig(ConfigScript):
             loss, grads = jax.value_and_grad(grad_loss)(params)
             updates, opt_state = optim.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
+            #return StepOutput(loss, params, opt_state), grads
             return StepOutput(loss, params, opt_state)
 
         if self.pjit:
@@ -391,6 +405,29 @@ class TKInferenceConfig(ConfigScript):
             loss = (softmax_cross_entropy_with_integer_labels(logits[:, :-1, :], batch['decoder_input_ids'][:, 1:]) * decoder_attn_mask[:, 1:]).sum() / decoder_attn_mask[:, 1:].sum()
             log_probs = -(softmax_cross_entropy_with_integer_labels(logits[:, :-1, :], batch['decoder_input_ids'][:, 1:]) * decoder_attn_mask[:, 1:]).sum(axis=1)
             return LogProbsOutput(loss, log_probs, logits)
+
+
+        def compute(x, y, z):
+            return (softmax_cross_entropy_with_integer_labels(x, y) * z).sum(axis=1) / z.sum(axis=1)
+
+
+        def loss_fn(params: PyTree, rng: jax.random.PRNGKey, input_ids: jnp.ndarray, decoder_input_ids: jnp.ndarray):
+            batch = {'input_ids': input_ids, 'decoder_input_ids': decoder_input_ids}
+            attn_mask = (batch['input_ids'] != pad_id).astype(jnp.int32)
+            batch['attention_mask'] = attn_mask
+            decoder_attn_mask = (batch['decoder_input_ids'] != pad_id).astype(jnp.int32)
+            decoder_attn_mask = decoder_attn_mask.at[:, 0].set(1)
+            batch['decoder_attention_mask'] = decoder_attn_mask
+            def grad_loss(params: PyTree):
+                logits = model(**batch, params=params, dropout_rng=rng, train=True).logits
+                loss = (softmax_cross_entropy_with_integer_labels(logits[:, :-1, :], batch['decoder_input_ids'][:, 1:]) * decoder_attn_mask[:, 1:]).sum(axis=1) / decoder_attn_mask[:, 1:].sum(axis=1)
+                loss = np.reshape(loss, ())
+                return loss
+            loss, grads = jax.value_and_grad(grad_loss)(params)
+            return loss, grads
+            #logits = model(**batch, params=params, dropout_rng=rng, train=True).logits
+            #loss = (softmax_cross_entropy_with_integer_labels(logits[:, :-1, :], batch['decoder_input_ids'][:, 1:]) * decoder_attn_mask[:, 1:]).sum(axis=1) / decoder_attn_mask[:, 1:].sum(axis=1)
+            #return loss, None
         
         if self.pjit:
             p_log_prob_fn = pjit(
@@ -401,7 +438,7 @@ class TKInferenceConfig(ConfigScript):
         else:
             p_log_prob_fn = log_prob_fn
         
-        inference_interface = TKInference(p_generate_fn, p_log_prob_fn, params, tokenizer)
+        inference_interface = TKInference(p_generate_fn, p_log_prob_fn, params, tokenizer, loss_fn=loss_fn)
 
         if self.pjit:
             mesh = Mesh(mesh_devices, ("dp", "mp"))
